@@ -41,10 +41,9 @@ Put the path to the input data. The script currently expecting the data in `Sing
 
 ### STRAT OF USER INPUTS ###
 
-QUERY_PATH = here::here("Datasets", "seurat_20240905080110.rds")
-REF_PATH = '/mnt/data/home/yinanli/data/scRNAseq/GSE195452_AllSkinCell_sce.rds'
+QUERY_PATH = "/mnt/data/home/alexmatei/scRNAseq_AEM/Datasets/seurat_20240905080110.rds"
+REF_PATH = '/mnt/data2/scRNAseq/GSE195452_Amit-LGR5/20230814_GSE195452_AllCellSkin_Seurat.rds'
 ANNOTATION = 'annotation'
-
 
 
 
@@ -54,15 +53,21 @@ ANNOTATION = 'annotation'
 library(SpatialExperiment)
 library(tidyverse)
 library(rmarkdown)
+library(Seurat)
+library(SeuratDisk)
 spe <- readr::read_rds(QUERY_PATH)
-
 ref_sce <- readr::read_rds(REF_PATH)
-ref_sce[[ANNOTATION]] <- factor(ref_sce[[ANNOTATION]])
 
+ref_sce[[ANNOTATION]] <- factor(ref_sce[[ANNOTATION]][[1]])
+
+if(class(ref_sce)== "SingleCellExperiment"){
 ## remove problematic dots ##
 cols_to_keep <- colnames(colData(ref_sce))[!grepl("\\.", colnames(colData(ref_sce)))]
 colData(ref_sce) <- colData(ref_sce)[, cols_to_keep, drop = FALSE]
-
+} else {
+  cols_to_keep <- names(ref_sce@meta.data)[!grepl("\\.", ref_sce@meta.data)]
+  ref_sce@meta.data <- ref_sce@meta.data[,cols_to_keep, drop = FALSE]
+}
 
 ## setting up the PopV conda env
 
@@ -74,10 +79,14 @@ tryCatch({
   quit(status = 1)
 })
 
+# Import anndata
+anndata <- reticulate::import("anndata")
+
 ## Convert spe to anndata
 library(zellkonverter)
 # open issue for sce dev team
 # see https://github.com/theislab/zellkonverter/issues/113
+if(class(spe)=="SingleCellExperiment"){
 mcols(colPairs(spe)[[1]])$value <- 1
 # remove table in table in spe that might give errors when writing AnnData
 for (i in colnames(colData(spe))) {
@@ -89,6 +98,51 @@ colData(spe) <- cbind(colData(spe), spatialCoords(spe))
 
 adata <- SCE2AnnData(spe)
 ref_adata <- SCE2AnnData(ref_sce)
+
+} else {
+  for (i in names(spe@meta.data)) {
+    if (class(spe[[i]]) == "DFrame") {
+      spe[[i]] <- NULL
+    }
+  }
+  h5ad_path <- here("Datasets/seurat_query.h5ad")
+  if (file.exists(h5ad_path)) {
+    message(paste(
+      "h5ad query file already exists at:",
+      h5ad_path,
+      ". Skipping conversion."
+    ))
+    return(FALSE)
+  } else {
+    SaveH5Seurat(spe, filename = here("Datasets/seurat_query.h5Seurat"))
+    Convert(here("Datasets/seurat_query.h5Seurat"), dest = "h5ad")
+  }
+  
+  adata_path <- here("Datasets/seurat_query.h5ad")
+  adata <- anndata$read_h5ad(adata_path)
+}
+
+if(class(ref_sce)=="Seurat") {
+  for (i in names(spe@meta.data)) {
+    if (class(spe[[i]]) == "DFrame") {
+      spe[[i]] <- NULL
+    }
+  }
+  h5ad_path <- here("Datasets/seurat_ref.h5ad")
+  if (file.exists(h5ad_path)) {
+    message(paste(
+      "h5ad ref file already exists at:",
+      h5ad_path,
+      ". Skipping conversion."
+    ))
+    return(FALSE)
+  } else {
+    SaveH5Seurat(ref_sce, filename = here("Datasets/seurat_ref.h5Seurat"))
+    Convert(here("Datasets/seurat_ref.h5Seurat"), dest = "h5ad")
+  }
+  adata_path <- here("Datasets/seurat_ref.h5ad")
+  ref_adata <- anndata$read_h5ad(adata_path)
+}
 
 ```
 
@@ -104,7 +158,7 @@ import scipy.sparse as sp
 
 ### Select the needed metadata in the query dataset ###
 ## create clean metadata to reduce errors
-columns_to_keep = ['cell', 'donor', 'block', 'sample_id']
+columns_to_keep = ['orig.ident', 'replicate_all']
 
 query_adata = r.adata
 query_adata.obs['query_labels'] = 'unknown'
@@ -151,10 +205,10 @@ tissue options:
 tissue = 'Skin'
 save_folder = 'popv_results'
 ### set up the output h5ad path ##
-out_path = '/mnt/data/home/yinanli/CosMx/PopVannotation/CosMxUAP1SSc_Fib_GSE195452_popv_' + r.ts +'.h5ad'
+out_path = '/mnt/data/home/alexmatei/CosMx/Datasets/Xuezhi_GSE195452_popv_' + r.ts +'.h5ad'
 
 ### Put the key for batch correction in query dataset ###
-query_batch_key = 'block'
+query_batch_key = 'replicate_all'
 
 ### Set the methods ### 
 # bbknn, scanorama, and rf performed bad in previouse run
@@ -330,7 +384,7 @@ sessioninfo::session_info()
 ```
 
 ```{bash, eval=FALSE}
-Rscript -e "rmarkdown::render('/mnt/data/home/alexmatei/scRNAseq_AEM/Analysis/PopV_Integration/PopVIntegration.Rmd', output_file = '26122024_PopVIntegration_Xuezhi_GSE195452.html', output_dir = '/mnt/data/home/alexmatei/scRNAseq_AEM/Results/PopV_Integration')" > /mnt/data/home/alexmatei/scRNAseq_AEM/Logs/log_$(date +"%Y%m%d_%H%M%S").log 2>&1
+Rscript -e "rmarkdown::render('/mnt/data/home/alexmatei/scRNAseq_AEM/Analysis/OneTimeUse/20241226_PopVIntegration_Xuezhi_Gur.Rmd', output_file = '26122024_PopVIntegration_Xuezhi_GSE195452.html', output_dir = '/mnt/data/home/alexmatei/scRNAseq_AEM/Results/PopV_Integration')" > /mnt/data/home/alexmatei/scRNAseq_AEM/Logs/log_$(date +"%Y%m%d_%H%M%S").log 2>&1
 
 ```
 
