@@ -1,0 +1,307 @@
+---
+title: "CosMx UAP1 SSc - immune cell annotation by PopV with GSE195452 skin dataset"
+author: "Yi-Nan Li"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    wrap: 72
+---
+
+## Load data (USER INPUT REQUIRED)
+
+Load the annotated data from Alex with BANKSY clustering and GSE195452 skin dataset from scratch.
+
+```{r data}
+### Preparation for PopV inputs ###
+
+library(SpatialExperiment)
+library(tidyverse)
+library(rmarkdown)
+spe <- readr::read_rds("~/CosMx/2024-07-16 _CosMxSScSkin_BANKSY_spe_CN.rds")
+
+## Filter BANKSY annotated immune cells
+spe <- spe[,spe$lv1.anno_bank == 'Immune']
+
+
+# ## load GSE195452 skin immune cell from raw count matrices
+# dat.dir <- '~/data/scRNAseq/GSE195452_Amit-LGR5/'
+# GSE195452.SRA.meta <- read.csv("~/data/scRNAseq/GSE195452_Amit-LGR5/SraRunTable.txt")
+# GSE195452.anno <- read.csv("~/data/scRNAseq/GSE195452_Amit-LGR5/GSE195452_Cell_metadata_v26_anno.txt", sep = "\t")
+# GSE195452.skin.samples <- GSE195452.SRA.meta %>% filter(Tissue == "Skin" & Assay.Type == "RNA-Seq") %>%
+#   pull(Sample.Name)
+# sample.to.analysis <- list.files(paste0(dat.dir,"/GSE195452_RAW"))[grepl(paste(GSE195452.skin.samples, collapse='|'),
+#                                                                         list.files(paste0(dat.dir,"/GSE195452_RAW")))]
+# ## Load the count matrix
+# library(scuttle)
+# mat <- readSparseCounts(paste0(dat.dir,"GSE195452_RAW/",sample.to.analysis[1]))
+# GSE195452.rawcount <- data.frame(row.names = row.names(mat)) %>% as.matrix() %>% Matrix::Matrix(sparse = TRUE)
+# for (i in sample.to.analysis[-1]) {
+#   tab <- readSparseCounts(paste0(dat.dir,"GSE195452_RAW/", i))
+#   if (identical(row.names(GSE195452.rawcount), row.names(tab))) {
+#     cat(paste0("Reading data from ", i, " (", which(i == sample.to.analysis), "/", length(sample.to.analysis), ")\n"))
+#     GSE195452.rawcount <- cbind(GSE195452.rawcount, tab) 
+#   }
+#   else{
+#     warning(paste0("Row names do not match for ", i, ". Sample skipped!! \n"))
+#   }
+# }
+# ref_sce <- SingleCellExperiment(assay = list(counts = GSE195452.rawcount), 
+#                                 colData = GSE195452.anno[colnames(GSE195452.rawcount),])
+# 
+# ref_sce$lv1_anno <- ref_sce$lv1.anno <- case_when(startsWith(ref_sce$annotation, "B") ~ "Bcell",
+#                                      startsWith(ref_sce$annotation, "Fibro") ~ "Fibroblast",
+#                                      startsWith(ref_sce$annotation, "T") ~ "Tcell",
+#                                      startsWith(ref_sce$annotation, "sT") ~ "Tcell",
+#                                      startsWith(ref_sce$annotation, "Vascular") ~ "Endothelial",
+#                                      startsWith(ref_sce$annotation, "Lymphatic") ~ "Endothelial",
+#                                      startsWith(ref_sce$annotation, "NK") ~ "NK",
+#                                      startsWith(ref_sce$annotation, "Peri") ~ "Pericyte",
+#                                      startsWith(ref_sce$annotation, "KRT") ~ "Epithelial",
+#                                      startsWith(ref_sce$annotation, "Mf") ~ "Macrophage",
+#                                      startsWith(ref_sce$annotation, "Mo") ~ "Monocyte",
+#                                      startsWith(ref_sce$annotation, "M_") ~ "Monocyte",
+#                                      startsWith(ref_sce$annotation, "Mast") ~ "Mastcell",
+#                                      startsWith(ref_sce$annotation, "DC") ~ "DC",
+#                                      startsWith(ref_sce$annotation, "NK") ~ "NK",
+#                                      .default = "other")
+# 
+# # import patient info
+# sample_id <- data.frame(sample_id = str_split_i(sample.to.analysis, "_", 1), Amp_batch_ID = str_split_i(sample.to.analysis, "_", 2))
+# sample_id$Amp_batch_ID <- gsub(".txt.gz", "", sample_id$Amp_batch_ID)
+# sum(duplicated(sample_id$Amp_batch_ID)) # check if amp_id is duplicated
+# patient_id <- left_join(GSE195452.SRA.meta, sample_id, by = c(`Sample.Name` = "sample_id")) %>% select(PATIENT_ID, `Sample.Name`, Amp_batch_ID, selection_marker)
+# patient_ids <- pull(patient_id, PATIENT_ID) %>% `names<-`(patient_id$Amp_batch_ID)
+# 
+# ref_sce$patient_id <- patient_ids[ref_sce$Amp_batch_ID] %>% unname()
+# # pat_info <- readxl::read_xlsx(paste0(dat.dir, "GSE195452_PatientInfo_mmc1.xlsx"), skip = 2) %>% as.data.frame() 
+# # rownames(pat_info) <- pat_info$PID
+# 
+# # save sce for future use
+# readr::write_rds(ref_sce, '~/data/scRNAseq/GSE195452_AllSkinCell_sce.rds')
+
+ref_sce <- readr::read_rds('~/data/scRNAseq/GSE195452_AllSkinCell_sce.rds')
+ref_sce$annotation <- factor(ref_sce$annotation)
+ref_sce$lv1_anno <- factor(ref_sce$lv1_anno)
+
+## remove problematic dots ##
+cols_to_keep <- colnames(colData(ref_sce))[!grepl("\\.", colnames(colData(ref_sce)))]
+colData(ref_sce) <- colData(ref_sce)[, cols_to_keep, drop = FALSE]
+  
+ref_sce <- ref_sce[,ref_sce$lv1_anno %in% c('Tcell', 'NK', 'Macrophage', 'Monocyte', 'Mastcell', 'DC', 'Bcell') & ref_sce$Number_of_cells == 1]
+
+## setting up the PopV conda env
+
+tryCatch({
+  reticulate::use_condaenv("PopV")
+  reticulate::py_config()
+}, error = function(e) {
+  message("Error setting up Python environment: ", e$message)
+  quit(status = 1)
+})
+
+## Convert spe to anndata
+library(zellkonverter)
+# open issue for sce dev team
+# see https://github.com/theislab/zellkonverter/issues/113
+mcols(colPairs(spe)[[1]])$value <- 1
+# remove table in table in spe that might give errors when writing AnnData
+for (i in colnames(colData(spe))) {
+  if (class(spe[[i]]) == "DFrame") {
+    spe[[i]] <- NULL
+  }
+}
+colData(spe) <- cbind(colData(spe), spatialCoords(spe))
+
+adata <- SCE2AnnData(spe)
+ref_adata <- SCE2AnnData(ref_sce)
+
+```
+
+## Load python modules and data transfer from R - **USER INPUT REQUIRED**
+
+```{python popv-setup}
+import anndata as ad
+import popv
+import numpy as np
+import scanpy as sc
+import scipy.sparse as sp
+
+
+### Select the needed metadata ###
+## create clean metadata to reduce errors
+columns_to_keep = ['cell', 'donor', 'block', 'sample_id']
+
+query_adata = r.adata
+query_adata.obs['query_labels'] = 'unknown'
+query_adata.obs['query_labels'] = query_adata.obs['query_labels'].astype('category')
+# Convert the dense matrix to a sparse matrix (CSR format)
+query_adata.X = sp.csr_matrix(query_adata.X)
+
+query_adata.obs = query_adata.obs[columns_to_keep]
+
+ref_adata = r.ref_adata
+
+```
+
+
+## Start PopV pipeline
+
+### Setting Up Annotation Parameters - **USER INPUT REQUIRED**
+Here is where you set the parameters for the automated annotation.
+
+Arguments:
+
+* **tissue**: Tabula Sapiens tissue to annotate your data with. Available tissues: ["Bladder", "Blood", "Bone_Marrow", "Kidney", "Large_Intestine", "Lung","Lymph_Node", "Pancreas", "Small_Intestine", "Spleen", "Thymus","Trachea", "Vasculature"]
+* **save_location**: location to save results to. By default will save to a folder named annotation_results. It is highly recommended you provide a Google Drive folder here.
+* **query_batch_key**: key in query_adata.obs for batch correction. Set to None for no batch correction.
+* **methods**: these are the methods to run. By default, will run all methods.
+
+Lesser used parameters
+
+* **query_labels_key**: scANVI has the option to use labeled cells in the query dataset during training. To use some prelabeled cells from the query dataset, set query_labels_key to the corresponding key in query_adata.obs
+* **unknown_celltype_label**: If query_labels_key is not None, will treat everything not labeled unknown_celltype_label as a labeled cell
+
+```{python popv-parm}
+""" 
+tissue options: 
+['Bladder','Blood','Bone_Marrow','Fat',
+'Heart','Kidney','Large_Intestine','Liver',
+'Lung','Lymph_Node','Mammary','Muscle',
+'Pancreas','Prostate','Salivary Gland',
+'Skin','Small_Intestine','Spleen',
+'Thymus','Trachea','Vasculature']
+"""
+
+### So far automatic download TS datsets did not work ###
+tissue = 'Skin'
+save_folder = 'popv_results'
+### set up the output h5ad path ##
+out_path = '/mnt/data/home/yinanli/CosMx/PopVannotation/CosMxUAP1SSc_Immun_query_and_GSE195452_popv.h5ad'
+
+### Put the key for batch correction in query dataset ###
+query_batch_key = 'block'
+
+### Set the methods ### 
+# bbknn, scanorama, and rf performed bad in previouse run
+# methods = None # set to None for using all the methods available
+methods = ['celltypist', 'knn_on_harmony','knn_on_scvi', 'scanvi', 'svm']
+# methods = ['celltypist', 'knn_on_bbknn', 'knn_on_harmony', 'knn_on_scanorama', 'knn_on_scvi', 'onclass', 'rf', 'scanvi', 'svm']
+
+# Lesser used parameters
+query_labels_key='query_labels'
+unknown_celltype_label='unknown'
+
+
+from scanpy._utils import check_nonnegative_integers
+          
+assert check_nonnegative_integers(query_adata.X) == True, 'Make sure query_adata.X contains raw_counts'
+```
+
+### Setup reference data (USER INPUT REQUIRED)
+
+```{python ref-setup}
+### Put the annotaion and parameter for batch correction here ###
+ref_labels_key = "annotation"
+ref_batch_key = "patient_id"
+
+assert check_nonnegative_integers(ref_adata.X) == True, 'Make sure ref_adata.X contains raw_counts'
+
+min_celltype_size = np.min(ref_adata.obs.groupby(ref_labels_key).size())
+n_samples_per_label = np.max((min_celltype_size, 500))
+```
+
+### Preprocess query with ref dataset
+
+```{python query-pp}
+
+from popv.preprocessing import Process_Query
+
+adata = Process_Query(
+    query_adata,
+    ref_adata,
+    query_labels_key=None,
+    query_batch_key=query_batch_key,
+    ref_labels_key=ref_labels_key,
+    ref_batch_key=ref_batch_key,
+    unknown_celltype_label=unknown_celltype_label,
+    cl_obo_folder = False,
+    # cl_obo_folder="./PopV/resources/ontology/",
+    prediction_mode="retrain",  # 'fast' mode gives fast results (does not include BBKNN and Scanorama and makes more inaccurate predictions)
+    n_samples_per_label=n_samples_per_label,
+    accelerator="cpu",
+    compute_embedding=True,
+    hvg=None,
+    save_path_trained_models = '/mnt/data/home/yinanli/CosMx/GSE195452_Immune_models',
+).adata
+```
+
+
+```{python popv-anno}
+from popv.annotation import annotate_data
+
+annotate_data(adata, methods=methods,save_path="/mnt/data/home/yinanli/CosMx/PopVannotation/Immune_popv_output")
+
+#Optional: save the full anndata will all objects
+adata.write(out_path)
+
+import pandas as pd
+# adata = sc.read_h5ad(out_path)
+cell_types = pd.unique(adata.obs[[i for i in adata.uns['prediction_keys']] + ['popv_parent']].values.ravel('K'))
+palette = sc.plotting.palettes.default_102
+celltype_colors = {i: j for i, j in zip(list(cell_types), palette)}
+```
+
+## PopV visulization
+
+```{r viz, fig.show='hold'}
+library(zellkonverter)
+library(dittoSeq)
+library(dplyr)
+library(reticulate)
+
+
+popv_sce <- readH5AD(py$out_path, verbose = T, reader = 'python')
+readr::write_rds(popv_sce, gsub('.h5ad', '_sce.rds', py$out_path))
+# popv_seurat <- Seurat::as.Seurat(popv_sce) %>% Seurat::UpdateSeuratObject()
+# readr::write_rds(popv_seurat, gsub('.h5ad', '_seurat.rds', py$out_path))
+
+celltype_color <- py$celltype_colors %>% unlist
+# 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scvi_umap_popv", var = "popv_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scvi_umap_popv", var = "popv_prediction_score", opacity = .5, do.label = T, labels.size = 2)
+dittoDimPlot(popv_sce, reduction.use = "X_scanvi_umap_popv", var = "popv_prediction_score", opacity = .5,
+             do.label = T, labels.size = 2)
+dittoDimPlot(popv_sce, reduction.use = "X_scvi_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing')
+dittoDimPlot(popv_sce, reduction.use = "X_scanvi_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing')
+dittoDimPlot(popv_sce, reduction.use = "X_umap_scanorma_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing')
+dittoDimPlot(popv_sce, reduction.use = "X_bbknn_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing')
+dittoDimPlot(popv_sce, reduction.use = "X_umap_harmony_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing')
+
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_umap_harmony_popv", var = "popv_prediction", opacity = .3,
+             do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce, reduction.use = "X_scvi_umap_popv", var = "popv_prediction", opacity = .3,
+             do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_prediction", opacity = .3,
+             do.label = T, labels.size = 3, color.panel = celltype_color)
+
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color)
+
+
+```
+
+## Session information
+
+```{r session}
+sessioninfo::session_info()
+
+```
+

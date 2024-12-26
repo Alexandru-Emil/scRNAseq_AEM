@@ -1,0 +1,440 @@
+---
+title: "Validate PopV annotation"
+author: "Alex Matei (adapted from Yi-Nan Li)"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    wrap: 72
+    code_folding: hide
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+if (!requireNamespace("here", quietly = TRUE)) {
+  install.packages("here")
+}
+library(here)
+#source(here("config.R"))
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
+```
+
+```{r ts}
+# setup timestamp
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+```
+
+This document was created with the time stamp *`r ts`*. <br>
+
+# Load data - **USER INPUT REQUIRED**
+
+Load the annotated data from Alex with BANKSY clustering and Honglin skin dataset from `20240816_CosMxUAP1SSc_FibPopV_HonglinJID_inference.html` and the PopV annotation with the timestamp ‘20240816091252’.
+
+
+```{r data, message=FALSE}
+library(SpatialExperiment)
+library(tidyverse)
+
+spe <- readr::read_rds("/mnt/data/home/yinanli/projects/2024_CosMxUAP/data/20241130_CosMxSScSkin_CnMerg_241201111305.rds")
+popv_sce <- readr::read_rds("/mnt/data/home/yinanli/projects/2024_CosMxUAP/data/CosMxUAP1SSc_Fib_HonglinJID_popv_20240816091252_sce.rds")
+
+# Rename annotations CosMx dataset -----------------
+
+## Replace "Fibroblasts" with "FB"
+spe$banksy_fib <- gsub("Fibroblasts", "FB", spe$banksy_fib)
+# Rename several fibroblasts subsets
+spe$banksy_fib <- case_when(spe$banksy_fib=="LGALS1+" ~ "ACKR3+",
+                               spe$banksy_fib=="IGFBP5+" ~ "GSN+",
+                               spe$banksy_fib=="KLF2+" ~ "DUSP+",
+                               .default = spe$banksy_fib)
+
+# Rename annotations reference dataset (GSE138669) ----------------
+
+## scvi annotations 
+popv_sce$popv_knn_on_scvi_prediction <- case_when (
+  popv_sce$popv_knn_on_scvi_prediction == "WIF1+" ~ "COMP+",
+  popv_sce$popv_knn_on_scvi_prediction == "PRSS23+" ~ "PRSS23/SFRP2+",
+  popv_sce$popv_knn_on_scvi_prediction == "SFRP4+" ~ "SFRP4/SFRP2+",
+  TRUE ~ popv_sce$popv_knn_on_scvi_prediction
+)
+
+unique(popv_sce$popv_knn_on_scvi_prediction)
+
+## scanvi annotations 
+popv_sce$popv_scanvi_prediction <- case_when (
+  popv_sce$popv_scanvi_prediction == "WIF1+" ~ "COMP+",
+  popv_sce$popv_scanvi_prediction == "PRSS23+" ~ "PRSS23/SFRP2+",
+  popv_sce$popv_scanvi_prediction == "SFRP4+" ~ "SFRP4/SFRP2+",
+  TRUE ~ popv_sce$popv_scanvi_prediction
+)
+
+unique(popv_sce$popv_scanvi_prediction)
+
+# Remove cells that were previously wrongly assigned as fibroblasts from the sce ----------
+dim(popv_sce)
+popv_sce <- popv_sce[, c(colnames(spe[, spe$lv2.anno_bank == "Fibroblasts"]), colnames(popv_sce[, popv_sce$X_dataset == 'ref']))]
+dim(popv_sce)
+
+```
+
+# Visualize annotation {.tabset .tabset-pill}
+
+```{r viz, results='asis'}
+library(dittoSeq)
+cat('\n\n### Embeddings \n')
+dittoDimPlot(
+  popv_sce,
+  reduction.use = "X_scvi_umap_popv",
+  var = "X_dataset",
+  opacity = .5,
+  do.label = F,
+  labels.size = 2,
+  main = 'scVI',
+  split.by = 'X_dataset',
+  show.others = FALSE
+)
+dittoDimPlot(
+  popv_sce,
+  reduction.use = "X_scanvi_umap_popv",
+  var = "X_dataset",
+  opacity = .5,
+  do.label = F,
+  labels.size = 2,
+  main = 'scANVI',
+  split.by = 'X_dataset',
+  show.others = FALSE
+)
+# dittoDimPlot(popv_sce, reduction.use = "X_umap_harmony_popv", var = "X_dataset", opacity = .5,
+#              do.label = F, labels.size = 2, main = 'Harmony', split.by = 'X_dataset', show.others = FALSE)
+# dittoDimPlot(popv_sce, reduction.use = "X_umap_scanorma_popv", var = "X_dataset", opacity = .5,
+#              do.label = F, labels.size = 2, main = 'Scanorma', split.by = 'X_dataset', show.others = FALSE)
+# dittoDimPlot(popv_sce, reduction.use = "X_bbknn_umap_popv", var = "X_dataset", opacity = .5,
+#              do.label = F, labels.size = 2, main = 'BBKNN', split.by = 'X_dataset', show.others = FALSE)
+
+popv_ref_sce <- popv_sce[, popv_sce$X_dataset == 'ref']
+popv_ref_sce_sub <- popv_ref_sce[, sample(colnames(popv_ref_sce), 4000, replace = FALSE)]
+popv_cosmx_sce <- popv_sce[, popv_sce$X_dataset == 'query']
+
+match_fib_id <- match(colnames(popv_cosmx_sce), colnames(spe[,spe$lv2.anno_bank=="Fibroblasts"]))
+popv_cosmx_sce$banksy_fib <- NA
+popv_cosmx_sce$banksy_fib[match_fib_id] <- spe[,spe$lv2.anno_bank=="Fibroblasts"]$banksy_fib
+
+cat('\n\n### scVI \n')
+dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "X_scvi_umap_popv",
+  var = "banksy_fib",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scVI_CosMx',
+  legend.show = T,
+  size = 1
+)
+dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "X_scvi_umap_popv",
+  var = "popv_knn_on_scvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scVI_CosMx',
+  legend.show = T,
+  size = 1
+)
+dittoDimPlot(
+  popv_ref_sce_sub,
+  reduction.use = "X_scvi_umap_popv",
+  var = "popv_knn_on_scvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scVI_reference',
+  legend.show = T,
+  size = 1
+)
+
+cat('\n\n### scANVI \n')
+dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "X_scanvi_umap_popv",
+  var = "banksy_fib",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_CosMx',
+  legend.show = T,
+  size = 1
+)
+dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "X_scanvi_umap_popv",
+  var = "popv_scanvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_CosMx',
+  legend.show = T,
+  size = 1
+)
+dittoDimPlot(
+  popv_ref_sce_sub,
+  reduction.use = "X_scanvi_umap_popv",
+  var = "popv_scanvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_reference',
+  legend.show = T,
+  size = 1
+)
+
+#cat('\n\n### Harmony \n')
+# dittoDimPlot(popv_cosmx_sce, reduction.use = "X_umap_harmony_popv", var = "popv_knn_on_harmony_prediction", opacity = .5,
+#              do.label = T, labels.size = 3, main = 'Harmony_cosmx', legend.show = T, size = 1)
+# dittoDimPlot(popv_ref_sce_sub, reduction.use = "X_umap_harmony_popv", var = "popv_knn_on_harmony_prediction", opacity = .5,
+#              do.label = T, labels.size = 3, main = 'Harmony_gse249279', legend.show = T, size = 1) 
+```
+
+
+
+# Visualize annotations embeddings figure
+
+```{r prep viz anno emb fig}
+
+reducedDimNames(popv_sce) <- case_when(
+  reducedDimNames(popv_sce) == "X_scanvi_umap_popv" ~ "scANVI_UMAP",
+  TRUE ~ reducedDimNames(popv_sce)
+)
+popv_sce$refquery <- as.character(popv_sce$X_dataset)
+popv_sce$refquery <- case_when(popv_sce$refquery == "ref" ~ "GSE138669",
+                               popv_sce$refquery == "query" ~ "cISH")
+popv_sce$refquery <- factor(popv_sce$refquery, levels = c(unique(popv_sce$refquery)[2], unique(popv_sce$refquery)[1]))
+
+```
+
+
+```{r viz anno emb fig, fig.dim=c(3,3)}
+
+dittoDimPlot(
+  popv_sce,
+  reduction.use = "scANVI_UMAP",
+  var = "refquery",
+  size = 2,
+  opacity = .5,
+  do.label = F,
+  labels.size = 4,
+  main = NULL,
+  split.by = 'refquery',
+  legend.show = FALSE,
+  show.others = FALSE
+) +
+  theme(strip.text = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+```
+
+# Vizualize annotations label transfer figure
+
+```{r prep viz anno lab tr fig}
+
+reducedDimNames(popv_cosmx_sce) <- case_when(
+  reducedDimNames(popv_cosmx_sce) == "X_scanvi_umap_popv" ~ "scANVI_UMAP",
+  TRUE ~ reducedDimNames(popv_cosmx_sce)
+)
+
+reducedDimNames(popv_ref_sce_sub) <- case_when(
+  reducedDimNames(popv_ref_sce_sub) == "X_scanvi_umap_popv" ~ "scANVI_UMAP",
+  TRUE ~ reducedDimNames(popv_ref_sce_sub)
+)
+
+```
+
+```{r viz anno lab tr fig, fig.width=10, fig.height=4}
+library(patchwork)
+
+p1<-dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "scANVI_UMAP",
+  var = "banksy_fib",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_CosMx',
+  legend.show = T,
+  size = 2
+)
+p2<-dittoDimPlot(
+  popv_cosmx_sce,
+  reduction.use = "scANVI_UMAP",
+  var = "popv_scanvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_CosMx',
+  legend.show = T,
+  size = 2
+)
+p3<-dittoDimPlot(
+  popv_ref_sce_sub,
+  reduction.use = "scANVI_UMAP",
+  var = "popv_scanvi_prediction",
+  opacity = .5,
+  do.label = T,
+  labels.size = 3,
+  main = 'scANVI_reference',
+  legend.show = F,
+  size = 2
+)
+
+p3|p2
+
+```
+
+
+# Comparison with previous annotation (Clustering/BANKSY) {.tabset .tabset-pill}
+
+```{r cp-anno, results='asis'}
+library(dplyr)
+library(stringr)
+scanvi_anno <- popv_cosmx_sce$popv_scanvi_prediction %>% `names<-`(colnames(popv_cosmx_sce))
+scvi_anno <- popv_cosmx_sce$popv_knn_on_scvi_prediction %>% `names<-`(colnames(popv_cosmx_sce))
+# harmony_anno <- popv_cosmx_sce$popv_knn_on_harmony_prediction %>% `names<-`(colnames(popv_cosmx_sce))
+
+spe_sub <- spe[,spe$lv2.anno_bank == "Fibroblasts"]
+scanvi_anno <- scanvi_anno[colnames(spe_sub)]
+scvi_anno <- scvi_anno[colnames(spe_sub)]
+# harmony_anno <- harmony_anno[colnames(spe_sub)]
+
+spe_sub$popv_scanvi <- scanvi_anno
+spe_sub$popv_scvi <- scvi_anno
+# spe_sub$popv_harmony <- harmony_anno
+
+
+plot_conti_ht <- function(tbl, xlab, ylab) {
+  tmp <- reshape2::melt(tbl)
+  p <- ggplot(tmp, aes(x = Var2, y = Var1, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "blue") +
+    labs(x = xlab, y = ylab, fill = "prop") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  return(p)
+}
+
+
+banksy_lv3_scvi <- prop.table(table(spe_sub$popv_scvi, spe_sub$banksy_fib), 1) 
+banksy_lv3_scanvi <- prop.table(table(spe_sub$popv_scanvi, spe_sub$banksy_fib), 1) 
+# banksy_lv3_harmony <- prop.table(table(spe_sub$popv_harmony, spe_sub$banksy_fib), 1) 
+
+banksy_lv3_scvi2 <- prop.table(table(spe_sub$popv_scvi, spe_sub$banksy_fib), 2) 
+banksy_lv3_scanvi2 <- prop.table(table(spe_sub$popv_scanvi, spe_sub$banksy_fib), 2) 
+# banksy_lv3_harmony2 <- prop.table(table(spe_sub$popv_harmony, spe_sub$banksy_fib), 2)
+
+cat('\n\n### scANVI and BANKSY ref in query \n')
+plot_conti_ht(banksy_lv3_scanvi, 'BANKSY_lv3', 'PopV_scANVI')
+
+cat('\n\n### scANVI and BANKSY query in ref \n')
+plot_conti_ht(banksy_lv3_scanvi2, 'BANKSY_lv3', 'PopV_scANVI')
+
+cat('\n\n### scVI and BANKSY ref in query \n')
+plot_conti_ht(banksy_lv3_scvi, 'BANKSY_lv3', 'PopV_scVI')
+
+cat('\n\n### scVI and BANKSY query in ref \n')
+plot_conti_ht(banksy_lv3_scvi2, 'BANKSY_lv3', 'PopV_scVI')
+
+# cat('\n\n### Harmony and BANKSY \n')
+# plot_conti_ht(banksy_lv3_harmony, 'BANKSY_lv3', 'PopV_Harmony')
+
+# Var2 <- case_when(endsWith(spe_sub$lv3.anno, 'Fib') ~ NA, .default = spe_sub$lv3.anno)
+# 
+# anno_lv3_scvi <- prop.table(table(spe_sub$popv_scvi, Var2), 1) 
+# anno_lv3_scanvi <- prop.table(table(spe_sub$popv_scanvi, Var2), 1) 
+# anno_lv3_harmony <- prop.table(table(spe_sub$popv_harmony, Var2), 1)
+# 
+# cat('\n\n### scVI and direct clustering \n')
+# plot_conti_ht(anno_lv3_scvi, 'anno_lv3', 'PopV_scANVI')
+# cat('\n\n### scANVI and direct clustering \n')
+# plot_conti_ht(anno_lv3_scanvi, 'anno_lv3', 'PopV_scVI')
+# cat('\n\n### Harmony and direct clustering \n')
+# plot_conti_ht(anno_lv3_harmony, 'anno_lv3', 'PopV_Harmony')
+
+
+```
+
+# Sanky plots
+
+```{r sanky}
+library(ggsankey)
+
+# Create data frames
+sanky_df_scvi <- data.frame(banksy=spe_sub$banksy_fib, scvi=spe_sub$popv_scvi)
+sanky_df_scanvi <- data.frame(banksy=spe_sub$banksy_fib, scanvi=spe_sub$popv_scanvi)
+
+matching <- sanky_df_scanvi
+
+# Summarize and calculate frequency
+matching.summary <- matching %>%
+  group_by(across(all_of(colnames(matching)))) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  group_by(across(all_of(colnames(matching)[2]))) %>%
+  mutate(tot_cells = sum(count), freq = count / tot_cells) %>%
+  ungroup()
+
+# Identify rare matches (freq < 0.1 or count < 20)
+rare.matches <- matching.summary %>%
+  filter(freq < 0.1 | count < 20) %>%
+  select(all_of(colnames(matching[1:2])))
+
+# Remove rare matches from the original data
+matching.filtered <- matching %>%
+  anti_join(rare.matches, by = colnames(matching)[1:2])
+
+# Create sankey data with filtered matches
+matching.sankey <- make_long(matching.filtered, !!sym(colnames(matching)[1]), !!sym(colnames(matching)[2]))
+
+# Plot the simplified Sankey
+ggplot(
+  matching.sankey,
+  aes(
+    x = x,
+    next_x = next_x,
+    node = node,
+    next_node = next_node,
+    fill = factor(node),
+    label = node
+  )
+) +
+  geom_sankey(flow.alpha = 0.3, node.color = "gray30") +
+  geom_sankey_label(size = 3,
+                    color = "white",
+                    fill = "gray40") +
+  theme_sankey(base_size = 18) +
+  labs(x = NULL) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+# Session information
+
+```{r session}
+etime <- proc.time() - ptm
+cat('Rendering this document took :', etime[3], ' s \n')
+
+sessioninfo::session_info()
+```
+
+```{bash, eval=FALSE}
+Rscript -e "rmarkdown::render('/mnt/data/home/alexmatei/CosMx_fistrun_Analysis_AEM/Analysis/PopV annotation/20241207_validate_popv.Rmd', output_file = 'Plots_validation_PopV_anno_Honglin.html', output_dir = '/mnt/data/home/alexmatei/CosMx_fistrun_Analysis_AEM/Results/PopV_Annotation/')" > /mnt/data/home/alexmatei/CosMx_fistrun_Analysis_AEM/Logs/log_$(date +"%Y%m%d_%H%M%S").log 2>&1
+
+```
+

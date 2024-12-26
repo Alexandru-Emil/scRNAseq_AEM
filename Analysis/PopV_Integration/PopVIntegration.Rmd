@@ -1,0 +1,321 @@
+---
+title: "CosMx UAP1 SSc - immune cell annotation by PopV with GSE195452 skin dataset"
+author: "Yi-Nan Li"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    df_print: paged
+    wrap: 72
+    code_folding: hide
+---
+
+```{r ts}
+# setup timestamp
+ts <- format(Sys.time(), "%Y%m%d%H%M%S")
+ptm <- proc.time()
+```
+
+This document was created with the time stamp *`r ts`*. <br>
+
+## Load data - **USER INPUT REQUIRED**
+
+Put the path to the input data. The script currently expecting the data in `SingleCellExperiment` format. <br>
+* **QUERY_PATH** : the path to the qurery dataset (in rds). Can also be a `SpatialExperiment` object. <br>
+* **REF_PATH**: the path to the reference dataset (in rds). <br> 
+* **ANNOTATION**: the column where the annotation is saved in the reference dataset in `colData`. <br>
+  *Note: don't include "." in the annotation/batch column names*
+
+
+```{r data, message=FALSE}
+
+### STRAT OF USER INPUTS ###
+
+QUERY_PATH = '~/CosMx/2024-07-16 _CosMxSScSkin_BANKSY_spe_CN.rds'
+REF_PATH = '~/data/scRNAseq/GSE195452_AllSkinCell_sce.rds'
+ANNOTATION = 'annotation'
+
+
+
+
+
+
+library(SpatialExperiment)
+library(tidyverse)
+library(rmarkdown)
+spe <- readr::read_rds(QUERY_PATH)
+
+ref_sce <- readr::read_rds(REF_PATH)
+ref_sce[[ANNOTATION]] <- factor(ref_sce[[ANNOTATION]])
+
+## remove problematic dots ##
+cols_to_keep <- colnames(colData(ref_sce))[!grepl("\\.", colnames(colData(ref_sce)))]
+colData(ref_sce) <- colData(ref_sce)[, cols_to_keep, drop = FALSE]
+
+
+## setting up the PopV conda env
+
+tryCatch({
+  reticulate::use_condaenv("PopV")
+  reticulate::py_config()
+}, error = function(e) {
+  message("Error setting up Python environment: ", e$message)
+  quit(status = 1)
+})
+
+## Convert spe to anndata
+library(zellkonverter)
+# open issue for sce dev team
+# see https://github.com/theislab/zellkonverter/issues/113
+mcols(colPairs(spe)[[1]])$value <- 1
+# remove table in table in spe that might give errors when writing AnnData
+for (i in colnames(colData(spe))) {
+  if (class(spe[[i]]) == "DFrame") {
+    spe[[i]] <- NULL
+  }
+}
+colData(spe) <- cbind(colData(spe), spatialCoords(spe))
+
+adata <- SCE2AnnData(spe)
+ref_adata <- SCE2AnnData(ref_sce)
+
+```
+
+## Load python modules and data transfer from R - **USER INPUT REQUIRED**
+
+```{python popv-setup}
+import anndata as ad
+import popv
+import numpy as np
+import scanpy as sc
+import scipy.sparse as sp
+
+
+### Select the needed metadata in the query dataset ###
+## create clean metadata to reduce errors
+columns_to_keep = ['cell', 'donor', 'block', 'sample_id']
+
+query_adata = r.adata
+query_adata.obs['query_labels'] = 'unknown'
+query_adata.obs['query_labels'] = query_adata.obs['query_labels'].astype('category')
+# Convert the dense matrix to a sparse matrix (CSR format)
+query_adata.X = sp.csr_matrix(query_adata.X)
+
+query_adata.obs = query_adata.obs[columns_to_keep]
+
+ref_adata = r.ref_adata
+
+```
+
+
+## Start PopV pipeline
+
+### Setting Up Annotation Parameters - **USER INPUT REQUIRED**
+Here is where you set the parameters for the automated annotation.
+
+Arguments:
+
+* **tissue**: Tabula Sapiens tissue to annotate your data with. Available tissues: ["Bladder", "Blood", "Bone_Marrow", "Kidney", "Large_Intestine", "Lung","Lymph_Node", "Pancreas", "Small_Intestine", "Spleen", "Thymus","Trachea", "Vasculature"]
+* **save_location**: location to save results to. By default will save to a folder named annotation_results. It is highly recommended you provide a Google Drive folder here.
+* **query_batch_key**: key in query_adata.obs for batch correction. Set to None for no batch correction.
+* **methods**: these are the methods to run. By default, will run all methods.Options: ['celltypist', 'knn_on_bbknn', 'knn_on_harmony', 'knn_on_scanorama', 'knn_on_scvi', 'onclass', 'rf', 'scanvi', 'svm']
+
+Lesser used parameters
+
+* **query_labels_key**: scANVI has the option to use labeled cells in the query dataset during training. To use some prelabeled cells from the query dataset, set query_labels_key to the corresponding key in query_adata.obs
+* **unknown_celltype_label**: If query_labels_key is not None, will treat everything not labeled unknown_celltype_label as a labeled cell
+
+```{python popv-parm}
+""" 
+tissue options: 
+['Bladder','Blood','Bone_Marrow','Fat',
+'Heart','Kidney','Large_Intestine','Liver',
+'Lung','Lymph_Node','Mammary','Muscle',
+'Pancreas','Prostate','Salivary Gland',
+'Skin','Small_Intestine','Spleen',
+'Thymus','Trachea','Vasculature']
+"""
+
+### So far automatic download TS datsets did not work ###
+tissue = 'Skin'
+save_folder = 'popv_results'
+### set up the output h5ad path ##
+out_path = '/mnt/data/home/yinanli/CosMx/PopVannotation/CosMxUAP1SSc_Fib_GSE195452_popv_' + r.ts +'.h5ad'
+
+### Put the key for batch correction in query dataset ###
+query_batch_key = 'block'
+
+### Set the methods ### 
+# bbknn, scanorama, and rf performed bad in previouse run
+# methods = None # set to None for using all the methods available
+methods = None
+
+
+# Lesser used parameters
+query_labels_key='query_labels'
+unknown_celltype_label='unknown'
+
+
+from scanpy._utils import check_nonnegative_integers
+          
+assert check_nonnegative_integers(query_adata.X) == True, 'Make sure query_adata.X contains raw_counts'
+```
+
+### Setup reference data **USER INPUT REQUIRED**
+
+```{python ref-setup}
+### Put the annotaion and parameter for batch correction here ###
+ref_labels_key = "annotation"
+ref_batch_key = "patient_id"
+
+assert check_nonnegative_integers(ref_adata.X) == True, 'Make sure ref_adata.X contains raw_counts'
+
+min_celltype_size = np.min(ref_adata.obs.groupby(ref_labels_key).size())
+n_samples_per_label = np.max((min_celltype_size, 500))
+```
+
+### Preprocess query with ref dataset
+
+```{python query-pp}
+
+from popv.preprocessing import Process_Query
+
+adata = Process_Query(
+    query_adata,
+    ref_adata,
+    query_labels_key=None,
+    query_batch_key=query_batch_key,
+    ref_labels_key=ref_labels_key,
+    ref_batch_key=ref_batch_key,
+    unknown_celltype_label=unknown_celltype_label,
+    cl_obo_folder = False,
+    # cl_obo_folder="./PopV/resources/ontology/",
+    prediction_mode="retrain",  # 'fast' mode gives fast results (does not include BBKNN and Scanorama and makes more inaccurate predictions)
+    n_samples_per_label=n_samples_per_label,
+    accelerator="cpu",
+    compute_embedding=True,
+    hvg=None
+).adata
+```
+
+
+```{python popv-anno}
+from popv.annotation import annotate_data
+
+annotate_data(adata, methods=methods)
+
+#Optional: save the full anndata will all objects
+adata.write(out_path)
+
+import pandas as pd
+# adata = sc.read_h5ad(out_path)
+cell_types = pd.unique(adata.obs[[i for i in adata.uns['prediction_keys']] + ['popv_parent']].values.ravel('K'))
+palette = sc.plotting.palettes.default_102
+celltype_colors = {i: j for i, j in zip(list(cell_types), palette)}
+```
+
+## PopV visulization {.tabset .tabset-pill}
+
+```{r viz, results='asis'}
+library(zellkonverter)
+library(SingleCellExperiment)
+library(dittoSeq)
+library(dplyr)
+library(reticulate)
+
+popv_sce <- readH5AD(py$out_path, verbose = T, reader = 'python')
+readr::write_rds(popv_sce, gsub('.h5ad', '_sce.rds', py$out_path))
+# popv_seurat <- Seurat::as.Seurat(popv_sce) %>% Seurat::UpdateSeuratObject()
+# readr::write_rds(popv_seurat, gsub('.h5ad', '_seurat.rds', py$out_path))
+
+celltype_color <- py$celltype_colors %>% unlist
+
+cat('\n\n### PopV prediction \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scanvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color, main = 'PopV prediction')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_prediction_score", opacity = .5, do.label = T, labels.size = 2, main ='Prediction score')
+
+cat('\n\n### Embeddings \n')
+dittoDimPlot(popv_sce, reduction.use = "X_scvi_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing', main = 'scVI')
+dittoDimPlot(popv_sce, reduction.use = "X_scanvi_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing', main = 'scANVI')
+dittoDimPlot(popv_sce, reduction.use = "X_umap_scanorma_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing', main = 'scanorma')
+dittoDimPlot(popv_sce, reduction.use = "X_bbknn_umap_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing', main = 'BBKNN')
+dittoDimPlot(popv_sce, reduction.use = "X_umap_harmony_popv", var = "X_dataset", opacity = .5,
+             do.label = F, labels.size = 2, order = 'increasing', main = 'Harmony')
+
+
+cat('\n\n### scVI \n') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scvi_umap_popv", var = "popv_knn_on_scvi_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scvi_umap_popv", var = "popv_knn_on_scvi_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### scANVI \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scanvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_scanvi_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_scanvi_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### Harmony \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_umap_harmony_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_umap_harmony_popv", var = "popv_knn_on_harmony_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_umap_harmony_popv", var = "popv_knn_on_harmony_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### Scanorma \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_umap_scanorma_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_umap_scanorma_popv", var = "popv_knn_on_scanorama_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_umap_scanorma_popv", var = "popv_knn_on_scanorama_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### BBKNN \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_bbknn_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_bbknn_umap_popv", var = "popv_knn_on_bbknn_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_bbknn_umap_popv", var = "popv_knn_on_bbknn_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### CellTypist \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scanvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_celltypist_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_celltypist_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+cat('\n\n### SVM \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scanvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_svm_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_svm_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+
+
+cat('\n\n### RF \n')
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'ref'], reduction.use = "X_scanvi_umap_popv", var = "popv_parent", opacity = .1,
+             do.label = T, labels.size = 3, color.panel = celltype_color, main = 'ref_annotation') 
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_rf_prediction", opacity = .5, do.label = T, labels.size = 3, color.panel = celltype_color)
+dittoDimPlot(popv_sce[,popv_sce$X_dataset == 'query'], reduction.use = "X_scanvi_umap_popv", var = "popv_rf_prediction_probabilities", opacity = .5, do.label = T, labels.size = 3)
+```
+
+## Outputs
+This analysis generated the following results: <br>
+
+1. `AnnData` object with both reference and query datasets containing PopV prediction. <br>
+  The object was saved at "`r print(py$out_path)`" <br>
+2. `SingleCellExperiment` object with both reference and query datasets containing PopV prediction. <br>
+  The object was saved at "`r print(gsub('.h5ad', '_sce.rds', py$out_path))`" <br>
+
+
+## Session information
+
+```{r session}
+etime <- proc.time() - ptm
+cat('This analysis took ', etime[3], ' s \n')
+
+sessioninfo::session_info()
+
+```
+
