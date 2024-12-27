@@ -13,6 +13,9 @@ Logs/
 # Ignore all .svg files
 *.svg
 
+# Ignore all .pkl files
+*.pkl
+
 # History files
 .Rhistory
 .Rapp.history

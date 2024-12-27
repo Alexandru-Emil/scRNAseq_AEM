@@ -21,7 +21,7 @@ if (!requireNamespace("here", quietly = TRUE)) {
   install.packages("here")
 }
 library(here)
-source(here("config.R"))
+#source(here("config.R"))
 
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, root.dir = here::here())
 ```
@@ -46,10 +46,6 @@ REF_PATH = '/mnt/data2/scRNAseq/GSE195452_Amit-LGR5/20230814_GSE195452_AllCellSk
 ANNOTATION = 'annotation'
 
 
-
-
-
-
 library(SpatialExperiment)
 library(tidyverse)
 library(rmarkdown)
@@ -60,91 +56,83 @@ ref_sce <- readr::read_rds(REF_PATH)
 
 ref_sce[[ANNOTATION]] <- factor(ref_sce[[ANNOTATION]][[1]])
 
-if(class(ref_sce)== "SingleCellExperiment"){
-## remove problematic dots ##
+if(class(spe)=="Seurat"){
+  spe2 <- SingleCellExperiment(list(counts=spe@assays$RNA$counts),
+    colData=DataFrame(spe@meta.data))
+  spe <- spe2
+  rm(spe2)
+}
+
+if(class(ref_sce)=="Seurat"){
+  ref_sce2 <- SingleCellExperiment(list(counts=ref_sce@assays$RNA$counts),
+    colData=DataFrame(ref_sce@meta.data))
+  ref_sce <- ref_sce2
+  rm(ref_sce2)
+}
+
+gc()
+
+# Some modifications to the annotations of the reference dataset
+ref_sce$annotation <- as.character(ref_sce$annotation)
+
+ref_sce$lv1_anno <- case_when(
+  startsWith(ref_sce$annotation, "B") ~ "Other",
+  startsWith(ref_sce$annotation, "Fibro") ~ ref_sce$annotation,
+  startsWith(ref_sce$annotation, "T") ~ "Other",
+  startsWith(ref_sce$annotation, "sT") ~ "Other",
+  startsWith(ref_sce$annotation, "Vascular") ~ "Other",
+  startsWith(ref_sce$annotation, "Lymphatic") ~ "Other",
+  startsWith(ref_sce$annotation, "NK") ~ "Other",
+  startsWith(ref_sce$annotation, "Peri") ~ "Other",
+  startsWith(ref_sce$annotation, "KRT") ~ "Other",
+  startsWith(ref_sce$annotation, "Mf") ~ ref_sce$annotation,
+  startsWith(ref_sce$annotation, "Mo") ~ "Other",
+  startsWith(ref_sce$annotation, "M_") ~ "Other",
+  startsWith(ref_sce$annotation, "Mast") ~ "Other",
+  startsWith(ref_sce$annotation, "DC") ~ "Other",
+  startsWith(ref_sce$annotation, "Plasma") ~ "Other",
+  .default = "Other"
+)
+
+ref_sce <- ref_sce[,!ref_sce$lv1_anno%in%c("Other")]
+
 cols_to_keep <- colnames(colData(ref_sce))[!grepl("\\.", colnames(colData(ref_sce)))]
 colData(ref_sce) <- colData(ref_sce)[, cols_to_keep, drop = FALSE]
-} else {
-  cols_to_keep <- names(ref_sce@meta.data)[!grepl("\\.", ref_sce@meta.data)]
-  ref_sce@meta.data <- ref_sce@meta.data[,cols_to_keep, drop = FALSE]
-}
 
 ## setting up the PopV conda env
 
 tryCatch({
-  reticulate::use_condaenv("PopV")
-  reticulate::py_config()
+  reticulate::use_condaenv("PopV", required = TRUE)
+  cat("\n--- PYTHON CONFIG (inside Rmd) ---\n")
+  print(reticulate::py_config())
 }, error = function(e) {
   message("Error setting up Python environment: ", e$message)
   quit(status = 1)
 })
 
 # Import anndata
-anndata <- reticulate::import("anndata")
+#anndata <- reticulate::import("anndata")
 
 ## Convert spe to anndata
 library(zellkonverter)
 # open issue for sce dev team
 # see https://github.com/theislab/zellkonverter/issues/113
-if(class(spe)=="SingleCellExperiment"){
-mcols(colPairs(spe)[[1]])$value <- 1
+
+#mcols(colPairs(spe)[[1]])$value <- 1
+
 # remove table in table in spe that might give errors when writing AnnData
 for (i in colnames(colData(spe))) {
   if (class(spe[[i]]) == "DFrame") {
     spe[[i]] <- NULL
   }
 }
-colData(spe) <- cbind(colData(spe), spatialCoords(spe))
+#colData(spe) <- cbind(colData(spe), spatialCoords(spe))
 
 adata <- SCE2AnnData(spe)
 ref_adata <- SCE2AnnData(ref_sce)
 
-} else {
-  for (i in names(spe@meta.data)) {
-    if (class(spe[[i]]) == "DFrame") {
-      spe[[i]] <- NULL
-    }
-  }
-  h5ad_path <- here("Datasets/seurat_query.h5ad")
-  if (file.exists(h5ad_path)) {
-    message(paste(
-      "h5ad query file already exists at:",
-      h5ad_path,
-      ". Skipping conversion."
-    ))
-    return(FALSE)
-  } else {
-    SaveH5Seurat(spe, filename = here("Datasets/seurat_query.h5Seurat"))
-    Convert(here("Datasets/seurat_query.h5Seurat"), dest = "h5ad")
-  }
-  
-  adata_path <- here("Datasets/seurat_query.h5ad")
-  adata <- anndata$read_h5ad(adata_path)
-}
-
-if(class(ref_sce)=="Seurat") {
-  for (i in names(spe@meta.data)) {
-    if (class(spe[[i]]) == "DFrame") {
-      spe[[i]] <- NULL
-    }
-  }
-  h5ad_path <- here("Datasets/seurat_ref.h5ad")
-  if (file.exists(h5ad_path)) {
-    message(paste(
-      "h5ad ref file already exists at:",
-      h5ad_path,
-      ". Skipping conversion."
-    ))
-    return(FALSE)
-  } else {
-    SaveH5Seurat(ref_sce, filename = here("Datasets/seurat_ref.h5Seurat"))
-    Convert(here("Datasets/seurat_ref.h5Seurat"), dest = "h5ad")
-  }
-  adata_path <- here("Datasets/seurat_ref.h5ad")
-  ref_adata <- anndata$read_h5ad(adata_path)
-}
-
 ```
+
 
 ## Load python modules and data transfer from R - **USER INPUT REQUIRED**
 
@@ -229,9 +217,9 @@ assert check_nonnegative_integers(query_adata.X) == True, 'Make sure query_adata
 ### Setup reference data **USER INPUT REQUIRED**
 
 ```{python ref-setup}
-### Put the annotaion and parameter for batch correction here ###
-ref_labels_key = "annotation"
-ref_batch_key = "patient_id"
+### Put the annotation and parameter for batch correction here ###
+ref_labels_key = "lv1_anno"
+ref_batch_key = "Amp_batch_ID"
 
 assert check_nonnegative_integers(ref_adata.X) == True, 'Make sure ref_adata.X contains raw_counts'
 
@@ -384,6 +372,13 @@ sessioninfo::session_info()
 ```
 
 ```{bash, eval=FALSE}
+
+source $(conda info --root)/etc/profile.d/conda.sh
+conda activate PopV
+
+export RETICULATE_PYTHON="/mnt/data/home/alexmatei/miniconda3/envs/PopV/bin/python"
+export LD_LIBRARY_PATH="/mnt/data/home/alexmatei/miniconda3/envs/PopV/lib:$LD_LIBRARY_PATH"
+
 Rscript -e "rmarkdown::render('/mnt/data/home/alexmatei/scRNAseq_AEM/Analysis/OneTimeUse/20241226_PopVIntegration_Xuezhi_Gur.Rmd', output_file = '26122024_PopVIntegration_Xuezhi_GSE195452.html', output_dir = '/mnt/data/home/alexmatei/scRNAseq_AEM/Results/PopV_Integration')" > /mnt/data/home/alexmatei/scRNAseq_AEM/Logs/log_$(date +"%Y%m%d_%H%M%S").log 2>&1
 
 ```
