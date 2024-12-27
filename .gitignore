@@ -3,6 +3,7 @@ Results/
 Datasets/
 C/
 Logs/
+Analysis/OneTimeUse/tmp
 
 # Ignore all .rds files
 *.rds
